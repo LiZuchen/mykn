@@ -22,26 +22,28 @@ import re
 
 class config:
     batch_size = 32
-    max_seq_len = 256
-    num_p = 23
-    learning_rate = 1e-5
-    EPOCH = 2
+    max_seq_len = 256#256个字截断
+    num_p = 23#关系的个数
+    learning_rate = 1e-5#学习率
+    EPOCH = 2#迭代轮数
 
-    mypath=''
+    mypath="C:\\Users\\Ac\\PycharmProjects\\mykn"
 
-    PATH_SCHEMA = "/Users/yangyf/workplace/model/medical_re/predicate.json"
-    PATH_TRAIN = '/Users/yangyf/workplace/model/medical_re/train_data.json'
-    PATH_BERT = "/Users/yangyf/workplace/model/medical_re/"
-    PATH_MODEL = "/Users/yangyf/workplace/model/medical_re/model_re.pkl"
-    PATH_SAVE = '/content/model_re.pkl'
-    tokenizer = BertTokenizer.from_pretrained("/Users/yangyf/workplace/model/medical_re/" + 'vocab.txt')
+    PATH_SCHEMA = mypath+"/model/medical_re/predicate.json"
+    PATH_TRAIN = mypath+'/model/medical_re/train_data.json'#训练数据
+    PATH_BERT = mypath+"/model/medical_re/"#预训练模型
+    PATH_MODEL = mypath+"/model/medical_re/model_re.pkl"
+    PATH_SAVE = mypath+'/model/save/model_re.pkl'#保存模型
+    tokenizer = BertTokenizer.from_pretrained(mypath+"/model/medical_re/" + 'vocab.txt')
 
+    #这两个字典会在读入时进行
     id2predicate = {}
     predicate2id = {}
 
 
 
 class IterableDataset(torch.utils.data.IterableDataset):
+    #类似dataloader
     def __init__(self, data, random):
         super(IterableDataset).__init__()
         self.data = data
@@ -59,42 +61,64 @@ class IterableDataset(torch.utils.data.IterableDataset):
         return -1
 
     def process_data(self):
+        #具体处理
         idxs = list(range(len(self.data)))
         if self.random:
             np.random.shuffle(idxs)
+        # 打乱数据
         batch_size = config.batch_size
         max_seq_len = config.max_seq_len
         num_p = config.num_p
-        batch_token_ids = np.zeros((batch_size, max_seq_len), dtype=np.int)
-        batch_mask_ids = np.zeros((batch_size, max_seq_len), dtype=np.int)
-        batch_segment_ids = np.zeros((batch_size, max_seq_len), dtype=np.int)
-        batch_subject_ids = np.zeros((batch_size, 2), dtype=np.int)
-        batch_subject_labels = np.zeros((batch_size, max_seq_len, 2), dtype=np.int)
-        batch_object_labels = np.zeros((batch_size, max_seq_len, num_p, 2), dtype=np.int)
+        batch_token_ids = np.zeros((batch_size, max_seq_len), dtype=int)
+        #处理对象都是input_ids
+        batch_mask_ids = np.zeros((batch_size, max_seq_len), dtype=int)
+        #标记是否参与attention计算
+        batch_segment_ids = np.zeros((batch_size, max_seq_len), dtype=int)
+        #当一句话处理，全是0
+        batch_subject_ids = np.zeros((batch_size, 2), dtype=int)
+        # 成为主体的start概率和end概率
+        batch_subject_labels = np.zeros((batch_size, max_seq_len, 2), dtype=int)
+        # max_seq_len--->每一个位置都可能是起始位置
+        batch_object_labels = np.zeros((batch_size, max_seq_len, num_p, 2), dtype=int)
+        # 每个位置（maxlen）可能为客体（2）且有关系（num_p），其中2会给出 是start和 是end的概率
         batch_i = 0
         for i in idxs:
+            #对于每一个数据集进行标注
             text = self.data[i]['text']
             batch_token_ids[batch_i, :] = self.tokenizer.encode(text, max_length=max_seq_len, pad_to_max_length=True,
                                                                 add_special_tokens=True)
+            #tokenizer将字转为input_ids
             batch_mask_ids[batch_i, :len(text) + 2] = 1
+            #padding 的不进行计算(-->0)，其他的包括CLS和SEP进行mask(-->1)
             spo_list = self.data[i]['spo_list']
-            idx = np.random.randint(0, len(spo_list), size=1)[0]
-            s_rand = self.tokenizer.encode(spo_list[idx][0])[1:-1]
-            s_rand_idx = self.search(list(batch_token_ids[batch_i, :]), s_rand)
-            batch_subject_ids[batch_i, :] = [s_rand_idx, s_rand_idx + len(s_rand) - 1]
+
+            idx = np.random.randint(0, len(spo_list), size=1)[0]#随机选出一个索引值，即对应一个主体
+            s_rand = self.tokenizer.encode(spo_list[idx][0])[1:-1]#对选出来的主体进行编码并不取特殊字符
+            s_rand_idx = self.search(list(batch_token_ids[batch_i, :]), s_rand)#查询这个主题在该batch中的位置
+            batch_subject_ids[batch_i, :] = [s_rand_idx, s_rand_idx + len(s_rand) - 1]#记录batch中的起始位置和终止位置
             for i in range(len(spo_list)):
                 spo = spo_list[i]
                 s = self.tokenizer.encode(spo[0])[1:-1]
+                #编码主体
                 p = config.prediction2id[spo[1]]
+                #预测的类别转为id
                 o = self.tokenizer.encode(spo[2])[1:-1]
+                #编码客体
                 s_idx = self.search(list(batch_token_ids[batch_i]), s)
+                #返回主体位置
                 o_idx = self.search(list(batch_token_ids[batch_i]), o)
+                #返回客体位置
                 if s_idx != -1 and o_idx != -1:
+                    #主客体都存在时
                     batch_subject_labels[batch_i, s_idx, 0] = 1
+                    #标记主体起始位置
                     batch_subject_labels[batch_i, s_idx + len(s) - 1, 1] = 1
+                    #标记主体终止位置
                     if s_idx == s_rand_idx:
                         batch_object_labels[batch_i, o_idx, p, 0] = 1
+                        #记录客体起始位置
                         batch_object_labels[batch_i, o_idx + len(o) - 1, p, 1] = 1
+                        #记录客体终止位置
             batch_i += 1
             if batch_i == batch_size or i == idxs[-1]:
                 yield batch_token_ids, batch_mask_ids, batch_segment_ids, batch_subject_labels, batch_subject_ids, batch_object_labels
@@ -106,6 +130,7 @@ class IterableDataset(torch.utils.data.IterableDataset):
                 batch_i = 0
 
     def get_stream(self):
+        #cycle会不断取数据
         return cycle(self.process_data())
 
     def __iter__(self):
@@ -157,14 +182,19 @@ class Model4po(nn.Module):
 
 def load_schema(path):
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        #json为 model/medical_re/predicate.json
         data = json.load(f)
+        #加载关系23个
         predicate = list(data.keys())
         prediction2id = {}
         id2predicate = {}
+        #构造成字典形式
         for i in range(len(predicate)):
             prediction2id[predicate[i]] = i
             id2predicate[i] = predicate[i]
+        #两个字典
     num_p = len(predicate)
+    #初始化config
     config.prediction2id = prediction2id
     config.id2predicate = id2predicate
     config.num_p = num_p
@@ -174,6 +204,7 @@ def load_data(path):
     text_spos = []
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         data = json.load(f)
+        #json: medical_re/train_data.json
         for item in data:
             text = item['text']
             spo_list = item['spo_list']
@@ -366,26 +397,25 @@ def evaluate(data, is_print, model4s, model4po):
 
 
 def run_train():
-    load_schema(config.PATH_SCHEMA)
+    load_schema(config.PATH_SCHEMA)#从json读入关系
     train_path = config.PATH_TRAIN
-    all_data = load_data(train_path)
-    random.shuffle(all_data)
+    all_data = load_data(train_path)#从json读入训练数据
+    random.shuffle(all_data)#打乱
 
     # 8:2划分训练集、验证集
     idx = int(len(all_data) * 0.8)
-    train_data = all_data[:idx]
-    valid_data = all_data[idx:]
-
+    train_data = all_data[:idx]#前idx个为训练集
+    valid_data = all_data[idx:]#后面的为验证集
     # train
     train_data_loader = IterableDataset(train_data, True)
     num_train_data = len(train_data)
-    checkpoint = torch.load(config.PATH_MODEL)
+    checkpoint = torch.load(config.PATH_MODEL,map_location=torch.device('cpu'))#预训练模型的加载
 
-    model4s = Model4s()
+    model4s = Model4s()#预测主体，找主体所在位置
     model4s.load_state_dict(checkpoint['model4s_state_dict'])
     # model4s.cuda()
 
-    model4po = Model4po()
+    model4po = Model4po()#预测客体和关系
     model4po.load_state_dict(checkpoint['model4po_state_dict'])
     # model4po.cuda()
 
