@@ -27,6 +27,8 @@ class config:
     learning_rate = 1e-5
     EPOCH = 2
 
+    mypath=''
+
     PATH_SCHEMA = "/Users/yangyf/workplace/model/medical_re/predicate.json"
     PATH_TRAIN = '/Users/yangyf/workplace/model/medical_re/train_data.json'
     PATH_BERT = "/Users/yangyf/workplace/model/medical_re/"
